@@ -1,2 +1,12 @@
 .DS_Store
 .Thumbs.db
+.env
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+data/
+media/
+*.part
+.pytest_cache/
