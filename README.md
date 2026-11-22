@@ -2,7 +2,7 @@
 
 Turns YouTube channels into RSS feeds Apple Podcasts can follow.
 
-Paste a channel URL or `@handle` on the homepage. yt-dlp downloads the latest videos to disk. The app serves RSS 2.0 with iTunes tags. Enclosures are MP4 when YouTube allows it, m4a otherwise. Shorts are skipped unless you turn that off.
+Paste a channel URL or `@handle` on the homepage. yt-dlp downloads the latest videos to disk. The app serves RSS 2.0 with iTunes tags. Enclosures are MP4 when YouTube allows it, m4a otherwise. Shorts are skipped unless you turn that off. Episode items include YouTube captions as WebVTT (`podcast:transcript`) and video chapters as Podcasting 2.0 JSON (`podcast:chapters`) when those exist.
 
 Each channel is `http://127.0.0.1:8000/<slug>/feed.xml`. From a phone, `localhost` will not work. Apple Podcasts wants a public HTTPS URL and at least one episode in the feed.
 
@@ -100,7 +100,7 @@ curl http://127.0.0.1:8000/refresh
 | `/` | Channel UI |
 | `/api/channels` | List JSON. `POST {youtube, slug?}` to add. `DELETE /api/channels/{slug}` to remove |
 | `/<slug>/feed.xml` | RSS 2.0 (GET and HEAD) |
-| `/<slug>/media/{file}` | Episode file |
+| `/<slug>/media/{file}` | Episode file, or `{id}.vtt` / `{id}.chapters.json` sidecars |
 | `/<slug>/artwork.jpg` | Show art |
 | `/<slug>/refresh` | Fetch that channel |
 | `/<slug>/status` | That channel's episodes |

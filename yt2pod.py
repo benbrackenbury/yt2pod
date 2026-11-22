@@ -21,6 +21,7 @@ log = logging.getLogger("yt2pod")
 
 ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ATOM_NS = "http://www.w3.org/2005/Atom"
+PODCAST_NS = "https://podcastindex.org/namespace/1.0"
 VIDEO_ID_RE = re.compile(r"^[\w-]{6,20}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 RESERVED_SLUGS = {
@@ -49,7 +50,9 @@ MIME = {
     ".mov": "video/quicktime",
     ".m4a": "audio/x-m4a",
     ".mp3": "audio/mpeg",
+    ".vtt": "text/vtt",
 }
+MEDIA_EXTS = {".mp4", ".m4v", ".mov", ".m4a", ".mp3"}
 
 _refresh_lock = threading.Lock()
 _channels_lock = threading.Lock()
@@ -59,6 +62,7 @@ _refresh_current: str | None = None
 
 ET.register_namespace("itunes", ITUNES_NS)
 ET.register_namespace("atom", ATOM_NS)
+ET.register_namespace("podcast", PODCAST_NS)
 
 
 @dataclass
@@ -328,6 +332,8 @@ def is_short(entry: dict[str, Any], min_duration: int = 61) -> bool:
 
 
 def mime_for_path(path: Path) -> str:
+    if path.name.endswith(".chapters.json"):
+        return "application/json+chapters"
     return MIME.get(path.suffix.lower(), "application/octet-stream")
 
 
@@ -460,12 +466,151 @@ def _format_selector(max_height: int) -> str:
 def _find_media(media_dir: Path, video_id: str) -> Path | None:
     if not VIDEO_ID_RE.fullmatch(video_id):
         return None
-    matches = [
-        p
-        for p in media_dir.glob(f"{video_id}.*")
-        if p.suffix.lower() not in {".part", ".ytdl", ".json", ".tmp"}
-    ]
+    matches = [p for p in media_dir.glob(f"{video_id}.*") if p.suffix.lower() in MEDIA_EXTS]
     return matches[0] if matches else None
+
+
+def rss_lang(lang: str | None, fallback: str = "en") -> str:
+    value = (lang or fallback).replace("_", "-").strip() or fallback
+    if value.lower().endswith("-orig"):
+        value = value[: -len("-orig")]
+    return value
+
+
+def _vtt_tracks(group: dict[str, Any] | None) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for lang, formats in (group or {}).items():
+        for fmt in formats or []:
+            if fmt.get("ext") == "vtt" and fmt.get("url"):
+                out.append((str(lang), str(fmt["url"])))
+    return out
+
+
+def _caption_rank(lang: str, preferred: str) -> tuple[int, int, str]:
+    lang = lang.lower().replace("_", "-")
+    pref = preferred.lower().replace("_", "-")
+    pref_base = pref.split("-")[0]
+    lang_base = lang.split("-")[0]
+    if lang == pref or lang_base == pref:
+        bucket = 0
+    elif lang_base == pref_base:
+        bucket = 1
+    elif lang_base == "en":
+        bucket = 2
+    else:
+        bucket = 3
+    orig = 1 if lang.endswith("-orig") else 0
+    return (bucket, orig, lang)
+
+
+def pick_caption(info: dict[str, Any], feed_language: str = "en") -> tuple[str | None, str | None]:
+    preferred = rss_lang(feed_language)
+    for group in (info.get("subtitles"), info.get("automatic_captions")):
+        best: tuple[tuple[int, int, str], str, str] | None = None
+        for lang, url in _vtt_tracks(group):
+            rank = _caption_rank(lang, preferred)
+            if best is None or rank < best[0]:
+                best = (rank, url, lang)
+        if best:
+            return best[1], best[2]
+    return None, None
+
+
+def chapters_payload(info: dict[str, Any]) -> dict[str, Any] | None:
+    raw = info.get("chapters") or []
+    chapters = []
+    for chapter in raw:
+        title = clean_xml_text(chapter.get("title") or "", 80)
+        if not title:
+            continue
+        try:
+            start = float(chapter.get("start_time") or 0)
+        except (TypeError, ValueError):
+            continue
+        chapters.append({"startTime": start, "title": title})
+    if len(chapters) < 2:
+        return None
+    return {"version": "1.2.0", "chapters": chapters}
+
+
+def _write_chapters(info: dict[str, Any], dest: Path) -> Path | None:
+    payload = chapters_payload(info)
+    if not payload:
+        dest.unlink(missing_ok=True)
+        return None
+    dest.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    return dest
+
+
+def _download_vtt(
+    settings: Settings, info: dict[str, Any], dest: Path
+) -> tuple[Path | None, str | None]:
+    import yt_dlp
+
+    url, lang = pick_caption(info, settings.feed_language)
+    if not url:
+        return None, None
+    try:
+        with yt_dlp.YoutubeDL(_ytdl_opts(settings)) as ydl:
+            data = ydl.urlopen(url).read()
+    except Exception as exc:
+        log.warning("Transcript download failed for %s: %s", info.get("id"), exc)
+        return None, None
+    if not data or len(data) < 8:
+        return None, None
+    dest.write_bytes(data)
+    return dest, lang
+
+
+def _attach_sidecars(
+    settings: Settings,
+    info: dict[str, Any],
+    media_dir: Path,
+    episode: dict[str, Any],
+) -> None:
+    video_id = str(episode.get("id") or info.get("id") or "")
+    if not VIDEO_ID_RE.fullmatch(video_id):
+        return
+    chapters_path = media_dir / f"{video_id}.chapters.json"
+    if episode.get("chapters") and (media_dir / str(episode["chapters"])).is_file():
+        pass
+    elif _write_chapters(info, chapters_path):
+        episode["chapters"] = chapters_path.name
+    else:
+        episode["chapters"] = None
+
+    transcript_name = episode.get("transcript")
+    transcript_path = media_dir / str(transcript_name) if transcript_name else media_dir / f"{video_id}.vtt"
+    if transcript_name and transcript_path.is_file():
+        return
+    saved, lang = _download_vtt(settings, info, media_dir / f"{video_id}.vtt")
+    if saved:
+        episode["transcript"] = saved.name
+        episode["transcript_type"] = "text/vtt"
+        episode["transcript_lang"] = rss_lang(lang, settings.feed_language)
+    else:
+        episode["transcript"] = None
+        episode.pop("transcript_type", None)
+        episode.pop("transcript_lang", None)
+
+
+def _sidecars_missing(episode: dict[str, Any], media_dir: Path) -> bool:
+    if "transcript" not in episode or "chapters" not in episode:
+        return True
+    for key in ("transcript", "chapters"):
+        name = episode.get(key)
+        if name and not (media_dir / str(name)).is_file():
+            return True
+    return False
+
+
+def _episode_keep(episode: dict[str, Any]) -> set[str]:
+    names = {episode["filename"]}
+    for key in ("transcript", "chapters"):
+        name = episode.get(key)
+        if name:
+            names.add(str(name))
+    return names
 
 
 def _remux_if_needed(path: Path) -> Path:
@@ -498,9 +643,14 @@ def _remux_if_needed(path: Path) -> Path:
     return path
 
 
-def _episode_from_info(info: dict[str, Any], path: Path) -> dict[str, Any]:
+def _episode_from_info(
+    info: dict[str, Any],
+    path: Path,
+    settings: Settings | None = None,
+    media_dir: Path | None = None,
+) -> dict[str, Any]:
     video_id = info.get("id") or path.stem
-    return {
+    episode = {
         "id": video_id,
         "title": clean_xml_text(info.get("title") or video_id, 200),
         "description": clean_xml_text(info.get("description") or "", 4000),
@@ -513,6 +663,9 @@ def _episode_from_info(info: dict[str, Any], path: Path) -> dict[str, Any]:
         "link": info.get("webpage_url") or f"https://www.youtube.com/watch?v={video_id}",
         "thumbnail": (info.get("thumbnail") or ""),
     }
+    if settings and media_dir:
+        _attach_sidecars(settings, info, media_dir, episode)
+    return episode
 
 
 def download_episode(
@@ -529,6 +682,13 @@ def download_episode(
         cached["nbytes"] = existing.stat().st_size
         cached["filename"] = existing.name
         cached["mime"] = mime_for_path(existing)
+        if _sidecars_missing(cached, media_dir):
+            info = _extract(
+                settings,
+                f"https://www.youtube.com/watch?v={video_id}",
+                {"noplaylist": True},
+            )
+            _attach_sidecars(settings, info, media_dir, cached)
         return cached
     if existing:
         info = _extract(
@@ -539,7 +699,7 @@ def download_episode(
         if settings.exclude_shorts and is_short(info, settings.min_duration):
             existing.unlink(missing_ok=True)
             return None
-        return _episode_from_info(info, existing)
+        return _episode_from_info(info, existing, settings, media_dir)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     outtmpl = str(media_dir / "%(id)s.%(ext)s")
@@ -573,10 +733,10 @@ def download_episode(
                 log.warning("Download finished but file missing for %s", video_id)
                 continue
             path = _remux_if_needed(path)
-            if path.suffix.lower() not in MIME:
+            if path.suffix.lower() not in MEDIA_EXTS:
                 log.warning("Skipping %s, unsupported type %s", video_id, path.suffix)
                 return None
-            return _episode_from_info(info, path)
+            return _episode_from_info(info, path, settings, media_dir)
         except Exception as exc:
             last_error = exc
             log.warning("Download attempt failed for %s: %s", video_id, exc)
@@ -628,7 +788,7 @@ def refresh_channel(settings: Settings, channel: Channel) -> dict[str, Any]:
         episode = download_episode(settings, video_id, media_dir, previous.get(video_id))
         if episode:
             episodes.append(episode)
-    keep = {ep["filename"] for ep in episodes}
+    keep = {name for ep in episodes for name in _episode_keep(ep)}
     for path in media_dir.iterdir():
         if path.name not in keep:
             path.unlink(missing_ok=True)
@@ -753,6 +913,22 @@ def build_rss(
         thumb = apple_artwork_url(ep.get("thumbnail"))
         if thumb:
             _sub(item, f"{{{ITUNES_NS}}}image", href=thumb)
+        if ep.get("transcript"):
+            _sub(
+                item,
+                f"{{{PODCAST_NS}}}transcript",
+                url=settings.media_url(channel.slug, ep["transcript"], origin),
+                type=ep.get("transcript_type") or "text/vtt",
+                language=rss_lang(ep.get("transcript_lang"), settings.feed_language),
+                rel="captions",
+            )
+        if ep.get("chapters"):
+            _sub(
+                item,
+                f"{{{PODCAST_NS}}}chapters",
+                url=settings.media_url(channel.slug, ep["chapters"], origin),
+                type="application/json+chapters",
+            )
 
     xml = ET.tostring(rss, encoding="utf-8")
     return b'<?xml version="1.0" encoding="UTF-8"?>' + xml

@@ -7,14 +7,18 @@ import json
 from yt2pod import (
     Channel,
     Settings,
+    _find_media,
     add_channel,
     apple_artwork_url,
     build_rss,
+    chapters_payload,
     is_short,
     mime_for_path,
     normalize_channel,
     parse_channels,
+    pick_caption,
     remove_channel,
+    rss_lang,
 )
 
 
@@ -131,6 +135,49 @@ class RssTests(unittest.TestCase):
         self.assertNotIn("/shorts/", xml)
         self.assertTrue(xml.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
         self.assertNotIn("webp", xml)
+        self.assertNotIn("podcast:transcript", xml)
+        self.assertNotIn("podcast:chapters", xml)
+
+    def test_transcript_and_chapters(self):
+        with TemporaryDirectory() as tmp:
+            settings = _settings(tmp)
+            channel = settings.channels["veritasium"]
+            xml = build_rss(
+                settings,
+                channel,
+                {
+                    "title": "Veritasium",
+                    "author": "Derek",
+                    "description": "Science videos",
+                    "episodes": [
+                        {
+                            "id": "abcdefghijk",
+                            "title": "The speed of light",
+                            "description": "Why c is c",
+                            "filename": "abcdefghijk.mp4",
+                            "nbytes": 123,
+                            "mime": "video/mp4",
+                            "transcript": "abcdefghijk.vtt",
+                            "transcript_type": "text/vtt",
+                            "transcript_lang": "en",
+                            "chapters": "abcdefghijk.chapters.json",
+                        }
+                    ],
+                },
+            ).decode("utf-8")
+
+        self.assertIn('xmlns:podcast="https://podcastindex.org/namespace/1.0"', xml)
+        self.assertIn(
+            'url="https://pod.example/veritasium/media/abcdefghijk.vtt"',
+            xml,
+        )
+        self.assertIn('type="text/vtt"', xml)
+        self.assertIn('rel="captions"', xml)
+        self.assertIn(
+            'url="https://pod.example/veritasium/media/abcdefghijk.chapters.json"',
+            xml,
+        )
+        self.assertIn('type="application/json+chapters"', xml)
 
     def test_apple_artwork_rejects_webp(self):
         self.assertEqual(
@@ -146,6 +193,72 @@ class RssTests(unittest.TestCase):
     def test_audio_fallback_mime(self):
         self.assertEqual(mime_for_path(Path("ep.m4a")), "audio/x-m4a")
         self.assertEqual(mime_for_path(Path("ep.mp4")), "video/mp4")
+        self.assertEqual(mime_for_path(Path("ep.vtt")), "text/vtt")
+        self.assertEqual(
+            mime_for_path(Path("abcdefghijk.chapters.json")),
+            "application/json+chapters",
+        )
+
+
+class CaptionTests(unittest.TestCase):
+    def test_prefers_manual_vtt(self):
+        url, lang = pick_caption(
+            {
+                "subtitles": {
+                    "en": [{"ext": "vtt", "url": "https://example/en.vtt"}],
+                },
+                "automatic_captions": {
+                    "en": [{"ext": "vtt", "url": "https://example/auto.vtt"}],
+                },
+            },
+            "en-us",
+        )
+        self.assertEqual(url, "https://example/en.vtt")
+        self.assertEqual(lang, "en")
+
+    def test_falls_back_to_auto(self):
+        url, lang = pick_caption(
+            {
+                "automatic_captions": {
+                    "en-orig": [{"ext": "vtt", "url": "https://example/orig.vtt"}],
+                    "de": [{"ext": "vtt", "url": "https://example/de.vtt"}],
+                },
+            },
+            "en-us",
+        )
+        self.assertEqual(url, "https://example/orig.vtt")
+        self.assertEqual(rss_lang(lang), "en")
+
+    def test_chapters_need_two(self):
+        self.assertIsNone(chapters_payload({"chapters": [{"start_time": 0, "title": "Only"}]}))
+        payload = chapters_payload(
+            {
+                "chapters": [
+                    {"start_time": 0, "title": "Intro"},
+                    {"start_time": 12.5, "title": "Meat"},
+                ]
+            }
+        )
+        self.assertEqual(
+            payload,
+            {
+                "version": "1.2.0",
+                "chapters": [
+                    {"startTime": 0.0, "title": "Intro"},
+                    {"startTime": 12.5, "title": "Meat"},
+                ],
+            },
+        )
+
+    def test_find_media_ignores_sidecars(self):
+        with TemporaryDirectory() as tmp:
+            media = Path(tmp)
+            (media / "abcdefghijk.vtt").write_text("WEBVTT\n", encoding="utf-8")
+            (media / "abcdefghijk.chapters.json").write_text("{}", encoding="utf-8")
+            self.assertIsNone(_find_media(media, "abcdefghijk"))
+            video = media / "abcdefghijk.mp4"
+            video.write_bytes(b"x")
+            self.assertEqual(_find_media(media, "abcdefghijk"), video)
 
 
 if __name__ == "__main__":
