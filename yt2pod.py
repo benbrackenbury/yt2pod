@@ -261,10 +261,23 @@ def mime_for_path(path: Path) -> str:
 
 
 def clean_xml_text(value: str | None, limit: int = 4000) -> str:
-    text = (value or "").translate(CONTROL_CHARS).strip()
+    text = (value or "").translate(CONTROL_CHARS).replace("\u2024", ".").strip()
     if len(text) > limit:
         text = text[: limit - 1].rstrip() + "…"
     return text
+
+
+def apple_artwork_url(url: str | None) -> str | None:
+    href = (url or "").strip()
+    if not href.startswith(("http://", "https://")):
+        return None
+    path = href.split("?", 1)[0].lower()
+    if path.endswith((".jpg", ".jpeg", ".png")):
+        return href
+    match = re.search(r"ytimg\.com/vi(?:_webp)?/([^/]+)/", href, re.I)
+    if match:
+        return f"https://i.ytimg.com/vi/{match.group(1)}/hqdefault.jpg"
+    return None
 
 
 def pub_date(upload_date: str | None, timestamp: int | float | None) -> str:
@@ -666,8 +679,9 @@ def build_rss(
         _sub(item, f"{{{ITUNES_NS}}}author", author)
         if ep.get("duration"):
             _sub(item, f"{{{ITUNES_NS}}}duration", str(int(ep["duration"])))
-        thumb = ep.get("thumbnail")
+        thumb = apple_artwork_url(ep.get("thumbnail"))
         if thumb:
             _sub(item, f"{{{ITUNES_NS}}}image", href=thumb)
 
-    return ET.tostring(rss, encoding="utf-8", xml_declaration=True)
+    xml = ET.tostring(rss, encoding="utf-8")
+    return b'<?xml version="1.0" encoding="UTF-8"?>' + xml

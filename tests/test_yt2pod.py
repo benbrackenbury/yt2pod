@@ -2,7 +2,16 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from yt2pod import Channel, Settings, build_rss, is_short, mime_for_path, normalize_channel, parse_channels
+from yt2pod import (
+    Channel,
+    Settings,
+    apple_artwork_url,
+    build_rss,
+    is_short,
+    mime_for_path,
+    normalize_channel,
+    parse_channels,
+)
 
 
 def _settings(tmp: str, **kwargs) -> Settings:
@@ -97,6 +106,19 @@ class RssTests(unittest.TestCase):
         self.assertIn('text="TV &amp; Film"', xml)
         self.assertIn("<itunes:duration>842</itunes:duration>", xml)
         self.assertNotIn("/shorts/", xml)
+        self.assertTrue(xml.startswith('<?xml version="1.0" encoding="UTF-8"?>'))
+        self.assertNotIn("webp", xml)
+
+    def test_apple_artwork_rejects_webp(self):
+        self.assertEqual(
+            apple_artwork_url("https://i.ytimg.com/vi_webp/abcdefghijk/maxresdefault.webp"),
+            "https://i.ytimg.com/vi/abcdefghijk/hqdefault.jpg",
+        )
+        self.assertIsNone(apple_artwork_url("https://cdn.example/cover.webp"))
+        self.assertEqual(
+            apple_artwork_url("https://pod.example/theo/artwork.jpg"),
+            "https://pod.example/theo/artwork.jpg",
+        )
 
     def test_audio_fallback_mime(self):
         self.assertEqual(mime_for_path(Path("ep.m4a")), "audio/x-m4a")

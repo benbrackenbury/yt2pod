@@ -100,7 +100,10 @@ def _rss(request: Request, slug: str) -> Response:
     return Response(
         content=body,
         media_type="application/rss+xml; charset=utf-8",
-        headers={"Cache-Control": "no-cache"},
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "Content-Length": str(len(body)),
+        },
     )
 
 
