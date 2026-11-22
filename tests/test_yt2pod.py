@@ -76,7 +76,6 @@ class RssTests(unittest.TestCase):
                 },
             ).decode("utf-8")
 
-        self.assertIn("<itunes:block>Yes</itunes:block>", xml)
         self.assertIn('type="video/mp4"', xml)
         self.assertIn("https://pod.example/media/abcdefghijk.mp4", xml)
         self.assertIn('<guid isPermaLink="false">yt2pod-abcdefghijk</guid>', xml)

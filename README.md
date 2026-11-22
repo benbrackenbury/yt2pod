@@ -4,7 +4,7 @@ YouTube-to-podcast RSS server. Point it at a channel, get a feed URL you can pas
 
 It downloads videos with yt-dlp, stores them on disk, and serves an RSS 2.0 feed with the iTunes namespace. Enclosures are MP4 video when YouTube allows it, m4a audio if video fails. Shorts are dropped unless you turn that off.
 
-The feed is unlisted in Apple's catalog (`itunes:block`), but the URLs themselves are open. Anyone who has `/feed.xml` can play it.
+Anyone with `/feed.xml` can play it. On a phone, use this computer's LAN IP, not `localhost`.
 
 ## Requirements
 
@@ -61,7 +61,7 @@ Wait until `/status` shows at least one episode, then:
 2. Tap Library
 3. Tap the More button (`...`)
 4. Tap Follow a Show by URL
-5. Paste `https://your-host/feed.xml`
+5. Paste `http://YOUR-LAN-IP:8000/feed.xml` (not localhost)
 6. Tap Follow
 
 **Mac**

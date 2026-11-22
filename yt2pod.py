@@ -81,16 +81,17 @@ class Settings:
     def artwork_path(self) -> Path:
         return self.data_dir / "artwork.jpg"
 
-    @property
-    def feed_url(self) -> str:
-        return f"{self.base_url}/feed.xml"
+    def origin(self, override: str | None = None) -> str:
+        return (override or self.base_url).rstrip("/")
 
-    def media_url(self, filename: str) -> str:
-        return f"{self.base_url}/media/{filename}"
+    def feed_url(self, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/feed.xml"
 
-    @property
-    def artwork_url(self) -> str:
-        return f"{self.base_url}/artwork"
+    def media_url(self, filename: str, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/media/{filename}"
+
+    def artwork_url(self, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/artwork.jpg"
 
     def ensure_dirs(self) -> None:
         self.media_dir.mkdir(parents=True, exist_ok=True)
@@ -509,7 +510,7 @@ def _sub(parent: ET.Element, tag: str, body: str | None = None, **attrs: str) ->
     return el
 
 
-def build_rss(settings: Settings, state: dict[str, Any]) -> bytes:
+def build_rss(settings: Settings, state: dict[str, Any], origin: str | None = None) -> bytes:
     title = clean_xml_text(state.get("title") or settings.feed_title or "yt2pod", 200)
     author = clean_xml_text(state.get("author") or settings.feed_author or title, 200)
     description = clean_xml_text(
@@ -523,7 +524,7 @@ def build_rss(settings: Settings, state: dict[str, Any]) -> bytes:
     rss = ET.Element("rss", {"version": "2.0"})
     channel = _sub(rss, "channel")
     _sub(channel, "title", title)
-    _sub(channel, "link", state.get("channel_url") or settings.base_url)
+    _sub(channel, "link", state.get("channel_url") or settings.origin(origin))
     _sub(channel, "description", description)
     _sub(channel, "language", settings.feed_language)
     _sub(channel, "generator", "yt2pod")
@@ -532,19 +533,18 @@ def build_rss(settings: Settings, state: dict[str, Any]) -> bytes:
     _sub(
         channel,
         f"{{{ATOM_NS}}}link",
-        href=settings.feed_url,
+        href=settings.feed_url(origin),
         rel="self",
         type="application/rss+xml",
     )
     _sub(channel, f"{{{ITUNES_NS}}}author", author)
     _sub(channel, f"{{{ITUNES_NS}}}summary", description)
     _sub(channel, f"{{{ITUNES_NS}}}explicit", explicit)
-    _sub(channel, f"{{{ITUNES_NS}}}block", "Yes")
     _sub(channel, f"{{{ITUNES_NS}}}type", "episodic")
     _sub(channel, f"{{{ITUNES_NS}}}category", text=settings.feed_category)
     artwork_href = None
     if settings.artwork_path.exists():
-        artwork_href = settings.artwork_url
+        artwork_href = settings.artwork_url(origin)
     elif settings.feed_artwork.startswith(("http://", "https://")):
         artwork_href = settings.feed_artwork
     if artwork_href:
@@ -552,7 +552,7 @@ def build_rss(settings: Settings, state: dict[str, Any]) -> bytes:
         image = _sub(channel, "image")
         _sub(image, "url", artwork_href)
         _sub(image, "title", title)
-        _sub(image, "link", state.get("channel_url") or settings.base_url)
+        _sub(image, "link", state.get("channel_url") or settings.origin(origin))
 
     for ep in state.get("episodes") or []:
         item = _sub(channel, "item")
@@ -560,14 +560,14 @@ def build_rss(settings: Settings, state: dict[str, Any]) -> bytes:
         ep_desc = clean_xml_text(ep.get("description") or ep_title, 4000)
         _sub(item, "title", ep_title)
         _sub(item, "description", ep_desc)
-        _sub(item, "link", ep.get("link") or settings.base_url)
+        _sub(item, "link", ep.get("link") or settings.origin(origin))
         guid = _sub(item, "guid", f"yt2pod-{ep['id']}")
         guid.set("isPermaLink", "false")
         _sub(item, "pubDate", pub_date(ep.get("upload_date"), ep.get("timestamp")))
         _sub(
             item,
             "enclosure",
-            url=settings.media_url(ep["filename"]),
+            url=settings.media_url(ep["filename"], origin),
             length=str(int(ep.get("nbytes") or 0)),
             type=ep.get("mime") or mime_for_path(Path(ep["filename"])),
         )

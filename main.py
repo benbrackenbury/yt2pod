@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import uvicorn
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, Response
 
 from yt2pod import (
@@ -63,7 +63,7 @@ def _refresh_loop() -> None:
 async def lifespan(_app: FastAPI):
     if not shutil.which("ffmpeg"):
         log.warning("ffmpeg not found on PATH. Video downloads will fail until it is installed.")
-    log.info("Feed URL: %s", settings.feed_url)
+    log.info("Feed URL: %s", settings.feed_url())
     log.info("In Apple Podcasts: Library, More, Follow a Show by URL")
     threading.Thread(target=_refresh_loop, daemon=True).start()
     yield
@@ -77,10 +77,18 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/feed.xml")
-def feed() -> Response:
+def _origin(request: Request) -> str:
+    host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+    proto = request.headers.get("x-forwarded-proto") or request.url.scheme
+    if host:
+        return f"{proto}://{host}".rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+@app.api_route("/feed.xml", methods=["GET", "HEAD"])
+def feed(request: Request) -> Response:
     _maybe_refresh()
-    body = build_rss(settings, load_state(settings.state_path))
+    body = build_rss(settings, load_state(settings.state_path), origin=_origin(request))
     return Response(
         content=body,
         media_type="application/rss+xml; charset=utf-8",
@@ -88,7 +96,7 @@ def feed() -> Response:
     )
 
 
-@app.get("/media/{filename}")
+@app.api_route("/media/{filename}", methods=["GET", "HEAD"])
 def media(filename: str) -> FileResponse:
     name = Path(filename).name
     if name != filename:
@@ -103,7 +111,8 @@ def media(filename: str) -> FileResponse:
     )
 
 
-@app.get("/artwork")
+@app.api_route("/artwork.jpg", methods=["GET", "HEAD"])
+@app.api_route("/artwork", methods=["GET", "HEAD"])
 def artwork() -> FileResponse:
     path = settings.artwork_path
     if not path.is_file():
@@ -124,7 +133,7 @@ def status() -> dict:
     state = load_state(settings.state_path)
     live = refresh_status()
     return {
-        "feed_url": settings.feed_url,
+        "feed_url": settings.feed_url(),
         "last_refresh": state.get("last_refresh"),
         "episodes": [
             {"id": ep.get("id"), "title": ep.get("title"), "mime": ep.get("mime")}
