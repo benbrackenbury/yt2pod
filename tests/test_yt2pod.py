@@ -2,15 +2,14 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from yt2pod import Settings, build_rss, is_short, mime_for_path, normalize_channel
+from yt2pod import Channel, Settings, build_rss, is_short, mime_for_path, normalize_channel, parse_channels
 
 
 def _settings(tmp: str, **kwargs) -> Settings:
+    channel = Channel(slug="veritasium", youtube="@veritasium", title="Veritasium", author="Derek")
     values = dict(
-        youtube_channel="@veritasium",
+        channels={"veritasium": channel},
         base_url="https://pod.example",
-        feed_title="Veritasium",
-        feed_author="Derek",
         data_dir=Path(tmp),
     )
     values.update(kwargs)
@@ -48,12 +47,26 @@ class ShortsFilterTests(unittest.TestCase):
         )
 
 
+class ChannelConfigTests(unittest.TestCase):
+    def test_parses_url_or_object(self):
+        channels = parse_channels(
+            {
+                "veritasium": "https://www.youtube.com/@veritasium",
+                "mkbhd": {"youtube": "@mkbhd", "title": "MKBHD"},
+            }
+        )
+        self.assertEqual(channels["veritasium"].youtube, "https://www.youtube.com/@veritasium")
+        self.assertEqual(channels["mkbhd"].title, "MKBHD")
+
+
 class RssTests(unittest.TestCase):
     def test_video_feed(self):
         with TemporaryDirectory() as tmp:
             settings = _settings(tmp)
+            channel = settings.channels["veritasium"]
             xml = build_rss(
                 settings,
+                channel,
                 {
                     "title": "Veritasium",
                     "author": "Derek",
@@ -77,7 +90,8 @@ class RssTests(unittest.TestCase):
             ).decode("utf-8")
 
         self.assertIn('type="video/mp4"', xml)
-        self.assertIn("https://pod.example/media/abcdefghijk.mp4", xml)
+        self.assertIn("https://pod.example/veritasium/media/abcdefghijk.mp4", xml)
+        self.assertIn("https://pod.example/veritasium/feed.xml", xml)
         self.assertIn('<guid isPermaLink="false">yt2pod-abcdefghijk</guid>', xml)
         self.assertIn('rel="self"', xml)
         self.assertIn('text="TV &amp; Film"', xml)

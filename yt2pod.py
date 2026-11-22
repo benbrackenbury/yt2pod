@@ -22,6 +22,8 @@ log = logging.getLogger("yt2pod")
 ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ATOM_NS = "http://www.w3.org/2005/Atom"
 VIDEO_ID_RE = re.compile(r"^[\w-]{6,20}$")
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+RESERVED_SLUGS = {"health", "media", "artwork", "refresh", "status", "feed", "docs", "redoc"}
 CHANNEL_HOME_RE = re.compile(
     r"^https?://(?:www\.)?youtube\.com/(@[^/]+|channel/[\w-]+|c/[\w-]+|user/[\w-]+)/?$",
     re.I,
@@ -48,15 +50,21 @@ ET.register_namespace("atom", ATOM_NS)
 
 
 @dataclass
+class Channel:
+    slug: str
+    youtube: str
+    title: str = ""
+    description: str = ""
+    author: str = ""
+    artwork: str = ""
+
+
+@dataclass
 class Settings:
-    youtube_channel: str
+    channels: dict[str, Channel]
     base_url: str
-    feed_title: str = ""
-    feed_description: str = ""
-    feed_author: str = ""
     feed_language: str = "en-us"
     feed_category: str = "TV & Film"
-    feed_artwork: str = ""
     itunes_explicit: str = "false"
     max_episodes: int = 10
     max_height: int = 720
@@ -68,33 +76,35 @@ class Settings:
     host: str = "0.0.0.0"
     port: int = 8000
     data_dir: Path = field(default_factory=lambda: Path("./data"))
-
-    @property
-    def media_dir(self) -> Path:
-        return self.data_dir / "media"
-
-    @property
-    def state_path(self) -> Path:
-        return self.data_dir / "state.json"
-
-    @property
-    def artwork_path(self) -> Path:
-        return self.data_dir / "artwork.jpg"
+    channels_file: Path = field(default_factory=lambda: Path("./channels.json"))
 
     def origin(self, override: str | None = None) -> str:
         return (override or self.base_url).rstrip("/")
 
-    def feed_url(self, origin: str | None = None) -> str:
-        return f"{self.origin(origin)}/feed.xml"
+    def channel_dir(self, slug: str) -> Path:
+        return self.data_dir / slug
 
-    def media_url(self, filename: str, origin: str | None = None) -> str:
-        return f"{self.origin(origin)}/media/{filename}"
+    def media_dir(self, slug: str) -> Path:
+        return self.channel_dir(slug) / "media"
 
-    def artwork_url(self, origin: str | None = None) -> str:
-        return f"{self.origin(origin)}/artwork.jpg"
+    def state_path(self, slug: str) -> Path:
+        return self.channel_dir(slug) / "state.json"
+
+    def artwork_path(self, slug: str) -> Path:
+        return self.channel_dir(slug) / "artwork.jpg"
+
+    def feed_url(self, slug: str, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/{slug}/feed.xml"
+
+    def media_url(self, slug: str, filename: str, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/{slug}/media/{filename}"
+
+    def artwork_url(self, slug: str, origin: str | None = None) -> str:
+        return f"{self.origin(origin)}/{slug}/artwork.jpg"
 
     def ensure_dirs(self) -> None:
-        self.media_dir.mkdir(parents=True, exist_ok=True)
+        for slug in self.channels:
+            self.media_dir(slug).mkdir(parents=True, exist_ok=True)
 
 
 def _env(name: str, default: str = "") -> str:
@@ -118,21 +128,84 @@ def _env_float(name: str, default: float) -> float:
     return float(raw) if raw else default
 
 
+def slug_from_youtube(raw: str) -> str:
+    s = raw.strip().rstrip("/")
+    match = re.search(r"@([^/?]+)", s)
+    token = match.group(1) if match else Path(s).name or "channel"
+    slug = re.sub(r"[^a-z0-9]+", "-", token.lower()).strip("-")
+    return slug or "channel"
+
+
+def parse_channels(raw: dict[str, Any]) -> dict[str, Channel]:
+    channels: dict[str, Channel] = {}
+    for slug, spec in raw.items():
+        slug = str(slug).strip().lower()
+        if slug in RESERVED_SLUGS:
+            raise SystemExit(f"Channel slug '{slug}' is reserved")
+        if not SLUG_RE.fullmatch(slug):
+            raise SystemExit(f"Channel slug '{slug}' must be lowercase letters, numbers, and dashes")
+        extra = {"title": "", "description": "", "author": "", "artwork": ""}
+        if isinstance(spec, str):
+            youtube = spec
+        elif isinstance(spec, dict):
+            youtube = str(spec.get("youtube") or spec.get("url") or spec.get("channel") or "")
+            extra = {
+                "title": str(spec.get("title") or ""),
+                "description": str(spec.get("description") or ""),
+                "author": str(spec.get("author") or ""),
+                "artwork": str(spec.get("artwork") or ""),
+            }
+        else:
+            raise SystemExit(f"Channel '{slug}' must be a YouTube URL or an object")
+        if not youtube.strip():
+            raise SystemExit(f"Channel '{slug}' is missing a YouTube URL")
+        channels[slug] = Channel(slug=slug, youtube=youtube.strip(), **extra)
+    if not channels:
+        raise SystemExit("channels.json has no channels")
+    return channels
+
+
+def load_channels(path: Path, fallback_youtube: str = "") -> dict[str, Channel]:
+    if path.is_file():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise SystemExit("channels.json must be an object of slug -> channel")
+        return parse_channels(raw)
+    if fallback_youtube:
+        slug = slug_from_youtube(fallback_youtube)
+        return {slug: Channel(slug=slug, youtube=fallback_youtube)}
+    raise SystemExit("Add channels.json or set YOUTUBE_CHANNEL")
+
+
+def _migrate_legacy_data(settings: Settings) -> None:
+    old_media = settings.data_dir / "media"
+    old_state = settings.data_dir / "state.json"
+    if not old_media.is_dir() or not old_state.is_file():
+        return
+    slug = next(iter(settings.channels))
+    dest_media = settings.media_dir(slug)
+    if dest_media.exists() and any(dest_media.iterdir()):
+        return
+    dest_media.parent.mkdir(parents=True, exist_ok=True)
+    if dest_media.exists():
+        dest_media.rmdir()
+    shutil.move(str(old_media), str(dest_media))
+    shutil.move(str(old_state), str(settings.state_path(slug)))
+    old_art = settings.data_dir / "artwork.jpg"
+    if old_art.is_file() and not settings.artwork_path(slug).exists():
+        shutil.move(str(old_art), str(settings.artwork_path(slug)))
+    log.info("Moved existing media into data/%s", slug)
+
+
 def load_settings() -> Settings:
     load_dotenv()
-    channel = _env("YOUTUBE_CHANNEL")
-    base_url = _env("BASE_URL", "http://localhost:8000").rstrip("/")
-    if not channel:
-        raise SystemExit("Set YOUTUBE_CHANNEL to a YouTube URL or @handle")
+    channels_file = Path(_env("CHANNELS_FILE", "./channels.json") or "./channels.json")
+    channels = load_channels(channels_file, _env("YOUTUBE_CHANNEL"))
     settings = Settings(
-        youtube_channel=channel,
-        base_url=base_url,
-        feed_title=_env("FEED_TITLE"),
-        feed_description=_env("FEED_DESCRIPTION"),
-        feed_author=_env("FEED_AUTHOR"),
+        channels=channels,
+        base_url=_env("BASE_URL", "http://localhost:8000").rstrip("/"),
         feed_language=_env("FEED_LANGUAGE", "en-us") or "en-us",
         feed_category=_env("FEED_CATEGORY", "TV & Film") or "TV & Film",
-        feed_artwork=_env("FEED_ARTWORK"),
         itunes_explicit=_env("ITUNES_EXPLICIT", "false") or "false",
         max_episodes=max(1, _env_int("MAX_EPISODES", 10)),
         max_height=max(144, _env_int("MAX_HEIGHT", 720)),
@@ -144,7 +217,9 @@ def load_settings() -> Settings:
         host=_env("HOST", "0.0.0.0") or "0.0.0.0",
         port=_env_int("PORT", 8000),
         data_dir=Path(_env("DATA_DIR", "./data") or "./data"),
+        channels_file=channels_file,
     )
+    _migrate_legacy_data(settings)
     settings.ensure_dirs()
     return settings
 
@@ -250,8 +325,8 @@ def _extract(settings: Settings, url: str, extra: dict[str, Any] | None = None) 
     return info
 
 
-def list_channel(settings: Settings) -> dict[str, Any]:
-    url = normalize_channel(settings.youtube_channel, settings.exclude_shorts)
+def list_channel(settings: Settings, youtube: str) -> dict[str, Any]:
+    url = normalize_channel(youtube, settings.exclude_shorts)
     limit = settings.max_episodes * 4 if settings.exclude_shorts else settings.max_episodes
     info = _extract(
         settings,
@@ -359,11 +434,12 @@ def _episode_from_info(info: dict[str, Any], path: Path) -> dict[str, Any]:
 def download_episode(
     settings: Settings,
     video_id: str,
+    media_dir: Path,
     cached: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     import yt_dlp
 
-    existing = _find_media(settings.media_dir, video_id)
+    existing = _find_media(media_dir, video_id)
     if existing and cached and cached.get("filename"):
         cached = dict(cached)
         cached["nbytes"] = existing.stat().st_size
@@ -382,7 +458,7 @@ def download_episode(
         return _episode_from_info(info, existing)
 
     url = f"https://www.youtube.com/watch?v={video_id}"
-    outtmpl = str(settings.media_dir / "%(id)s.%(ext)s")
+    outtmpl = str(media_dir / "%(id)s.%(ext)s")
     attempts = [
         {
             "format": _format_selector(settings.max_height),
@@ -404,11 +480,11 @@ def download_episode(
             if not info:
                 continue
             if settings.exclude_shorts and is_short(info, settings.min_duration):
-                leftover = _find_media(settings.media_dir, video_id)
+                leftover = _find_media(media_dir, video_id)
                 if leftover:
                     leftover.unlink(missing_ok=True)
                 return None
-            path = _find_media(settings.media_dir, video_id)
+            path = _find_media(media_dir, video_id)
             if not path:
                 log.warning("Download finished but file missing for %s", video_id)
                 continue
@@ -436,62 +512,70 @@ def _best_thumbnail(thumbnails: list[dict[str, Any]]) -> str | None:
     return ranked[0].get("url")
 
 
-def update_artwork(settings: Settings, channel: dict[str, Any]) -> None:
-    src = settings.feed_artwork
+def update_artwork(channel: Channel, listed: dict[str, Any], dest: Path) -> None:
+    src = channel.artwork
     if src and Path(src).is_file():
-        shutil.copy2(src, settings.artwork_path)
+        shutil.copy2(src, dest)
         return
-    url = src if src.startswith(("http://", "https://")) else _best_thumbnail(channel.get("thumbnails") or [])
+    url = src if src.startswith(("http://", "https://")) else _best_thumbnail(listed.get("thumbnails") or [])
     if not url:
         return
     req = Request(url, headers={"User-Agent": "yt2pod/1.0"})
     with urlopen(req, timeout=30) as resp:
         data = resp.read()
-    settings.artwork_path.write_bytes(data)
+    dest.write_bytes(data)
 
 
-def refresh(settings: Settings) -> dict[str, Any]:
+def refresh_channel(settings: Settings, channel: Channel) -> dict[str, Any]:
     global _refresh_current
-    channel = list_channel(settings)
-    previous = {ep["id"]: ep for ep in load_state(settings.state_path).get("episodes") or [] if ep.get("id")}
+    listed = list_channel(settings, channel.youtube)
+    media_dir = settings.media_dir(channel.slug)
+    media_dir.mkdir(parents=True, exist_ok=True)
+    previous = {
+        ep["id"]: ep
+        for ep in load_state(settings.state_path(channel.slug)).get("episodes") or []
+        if ep.get("id")
+    }
     episodes: list[dict[str, Any]] = []
-    for entry in channel["entries"]:
+    for entry in listed["entries"]:
         video_id = entry["id"]
-        _refresh_current = entry.get("title") or video_id
+        _refresh_current = f"{channel.slug}: {entry.get('title') or video_id}"
         log.info("Fetching %s (%s)", _refresh_current, video_id)
-        episode = download_episode(settings, video_id, previous.get(video_id))
+        episode = download_episode(settings, video_id, media_dir, previous.get(video_id))
         if episode:
             episodes.append(episode)
     keep = {ep["filename"] for ep in episodes}
-    for path in settings.media_dir.iterdir():
+    for path in media_dir.iterdir():
         if path.name not in keep:
             path.unlink(missing_ok=True)
     try:
-        update_artwork(settings, channel)
+        update_artwork(channel, listed, settings.artwork_path(channel.slug))
     except Exception as exc:
-        log.warning("Artwork update failed: %s", exc)
+        log.warning("Artwork update failed for %s: %s", channel.slug, exc)
     state = {
-        "title": settings.feed_title or channel["title"] or "YouTube",
-        "author": settings.feed_author or channel["author"] or "",
-        "description": settings.feed_description or clean_xml_text(channel["description"], 4000),
-        "channel_url": channel["url"],
+        "title": channel.title or listed["title"] or channel.slug,
+        "author": channel.author or listed["author"] or "",
+        "description": channel.description or clean_xml_text(listed["description"], 4000),
+        "channel_url": listed["url"],
         "last_refresh": datetime.now(timezone.utc).isoformat(),
         "episodes": episodes,
     }
-    save_state(settings.state_path, state)
+    save_state(settings.state_path(channel.slug), state)
     _refresh_current = None
-    log.info("Refresh complete: %s episode(s)", len(episodes))
+    log.info("Refresh complete for %s: %s episode(s)", channel.slug, len(episodes))
     return state
 
 
-def run_refresh(settings: Settings) -> str:
+def run_refresh(settings: Settings, slug: str | None = None) -> str:
     global _refresh_running, _refresh_error, _refresh_current
     if not _refresh_lock.acquire(blocking=False):
         return "already-running"
     _refresh_running = True
     _refresh_error = None
+    targets = [settings.channels[slug]] if slug else list(settings.channels.values())
     try:
-        refresh(settings)
+        for channel in targets:
+            refresh_channel(settings, channel)
         return "ok"
     except Exception as exc:
         _refresh_error = str(exc)
@@ -510,11 +594,16 @@ def _sub(parent: ET.Element, tag: str, body: str | None = None, **attrs: str) ->
     return el
 
 
-def build_rss(settings: Settings, state: dict[str, Any], origin: str | None = None) -> bytes:
-    title = clean_xml_text(state.get("title") or settings.feed_title or "yt2pod", 200)
-    author = clean_xml_text(state.get("author") or settings.feed_author or title, 200)
+def build_rss(
+    settings: Settings,
+    channel: Channel,
+    state: dict[str, Any],
+    origin: str | None = None,
+) -> bytes:
+    title = clean_xml_text(state.get("title") or channel.title or channel.slug, 200)
+    author = clean_xml_text(state.get("author") or channel.author or title, 200)
     description = clean_xml_text(
-        state.get("description") or settings.feed_description or title,
+        state.get("description") or channel.description or title,
         4000,
     ) or title
     explicit = settings.itunes_explicit.lower()
@@ -522,40 +611,40 @@ def build_rss(settings: Settings, state: dict[str, Any], origin: str | None = No
         explicit = "false"
 
     rss = ET.Element("rss", {"version": "2.0"})
-    channel = _sub(rss, "channel")
-    _sub(channel, "title", title)
-    _sub(channel, "link", state.get("channel_url") or settings.origin(origin))
-    _sub(channel, "description", description)
-    _sub(channel, "language", settings.feed_language)
-    _sub(channel, "generator", "yt2pod")
-    _sub(channel, "ttl", "60")
-    _sub(channel, "lastBuildDate", format_datetime(datetime.now(timezone.utc)))
+    rss_channel = _sub(rss, "channel")
+    _sub(rss_channel, "title", title)
+    _sub(rss_channel, "link", state.get("channel_url") or settings.origin(origin))
+    _sub(rss_channel, "description", description)
+    _sub(rss_channel, "language", settings.feed_language)
+    _sub(rss_channel, "generator", "yt2pod")
+    _sub(rss_channel, "ttl", "60")
+    _sub(rss_channel, "lastBuildDate", format_datetime(datetime.now(timezone.utc)))
     _sub(
-        channel,
+        rss_channel,
         f"{{{ATOM_NS}}}link",
-        href=settings.feed_url(origin),
+        href=settings.feed_url(channel.slug, origin),
         rel="self",
         type="application/rss+xml",
     )
-    _sub(channel, f"{{{ITUNES_NS}}}author", author)
-    _sub(channel, f"{{{ITUNES_NS}}}summary", description)
-    _sub(channel, f"{{{ITUNES_NS}}}explicit", explicit)
-    _sub(channel, f"{{{ITUNES_NS}}}type", "episodic")
-    _sub(channel, f"{{{ITUNES_NS}}}category", text=settings.feed_category)
+    _sub(rss_channel, f"{{{ITUNES_NS}}}author", author)
+    _sub(rss_channel, f"{{{ITUNES_NS}}}summary", description)
+    _sub(rss_channel, f"{{{ITUNES_NS}}}explicit", explicit)
+    _sub(rss_channel, f"{{{ITUNES_NS}}}type", "episodic")
+    _sub(rss_channel, f"{{{ITUNES_NS}}}category", text=settings.feed_category)
     artwork_href = None
-    if settings.artwork_path.exists():
-        artwork_href = settings.artwork_url(origin)
-    elif settings.feed_artwork.startswith(("http://", "https://")):
-        artwork_href = settings.feed_artwork
+    if settings.artwork_path(channel.slug).exists():
+        artwork_href = settings.artwork_url(channel.slug, origin)
+    elif channel.artwork.startswith(("http://", "https://")):
+        artwork_href = channel.artwork
     if artwork_href:
-        _sub(channel, f"{{{ITUNES_NS}}}image", href=artwork_href)
-        image = _sub(channel, "image")
+        _sub(rss_channel, f"{{{ITUNES_NS}}}image", href=artwork_href)
+        image = _sub(rss_channel, "image")
         _sub(image, "url", artwork_href)
         _sub(image, "title", title)
         _sub(image, "link", state.get("channel_url") or settings.origin(origin))
 
     for ep in state.get("episodes") or []:
-        item = _sub(channel, "item")
+        item = _sub(rss_channel, "item")
         ep_title = clean_xml_text(ep.get("title") or ep.get("id"), 200)
         ep_desc = clean_xml_text(ep.get("description") or ep_title, 4000)
         _sub(item, "title", ep_title)
@@ -567,7 +656,7 @@ def build_rss(settings: Settings, state: dict[str, Any], origin: str | None = No
         _sub(
             item,
             "enclosure",
-            url=settings.media_url(ep["filename"], origin),
+            url=settings.media_url(channel.slug, ep["filename"], origin),
             length=str(int(ep.get("nbytes") or 0)),
             type=ep.get("mime") or mime_for_path(Path(ep["filename"])),
         )
