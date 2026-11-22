@@ -69,12 +69,20 @@
         z-index: 2;
       }
       main { max-width: 40rem; margin: 0 auto; }
+      .heading {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 0.65rem;
+        margin: 0 0 0.35rem;
+      }
       h1 {
         font-size: 1.6rem;
         font-weight: 650;
         letter-spacing: -0.03em;
         text-wrap: balance;
-        margin: 0 0 0.35rem;
+        margin: 0;
+        flex: 1 1 auto;
       }
       .lede {
         color: var(--muted);
@@ -219,7 +227,10 @@
   <body>
     <a class="skip" href="#main">Skip to content</a>
     <main id="main">
-      <h1>Channels</h1>
+      <div class="heading">
+        <h1>Channels</h1>
+        <button type="button" class="ghost" id="refresh-all">Refresh all</button>
+      </div>
       <p class="lede">
         Add a YouTube channel, wait for episodes, then follow the feed URL in Apple Podcasts
         (Library → More → Follow a Show by URL).
@@ -266,6 +277,7 @@
       const statusEl = document.getElementById("status");
       const form = document.getElementById("add-form");
       const addBtn = document.getElementById("add-btn");
+      const refreshAllBtn = document.getElementById("refresh-all");
       const dialog = document.getElementById("confirm");
       const dialogTitle = document.getElementById("confirm-title");
       let pendingSlug = null;
@@ -293,11 +305,12 @@
         }
       }
 
-      function card(ch) {
+      function card(ch, running) {
         const art = ch.artwork_url
           ? `<img src="${ch.artwork_url}" alt="" width="56" height="56" />`
           : `<div class="ph" aria-hidden="true">yt</div>`;
         const count = new Intl.NumberFormat().format(ch.episodes);
+        const busy = running ? "disabled" : "";
         return `<article>
           ${art}
           <div>
@@ -310,6 +323,7 @@
             <div class="actions">
               <a class="btn" href="${ch.feed_url}">Open Feed</a>
               <button type="button" class="ghost" data-copy="${ch.feed_url}">Copy Feed</button>
+              <button type="button" class="ghost" data-refresh="${escapeAttr(ch.slug)}" ${busy}>Refresh</button>
               <button type="button" class="danger" data-remove="${ch.slug}" data-title="${escapeAttr(ch.title)}">Remove</button>
             </div>
           </div>
@@ -331,10 +345,11 @@
         const res = await fetch("/api/channels");
         if (!res.ok) throw new Error("Could not load channels");
         const data = await res.json();
+        refreshAllBtn.disabled = data.running || !data.channels.length;
         if (!data.channels.length) {
           listEl.innerHTML = `<p class="empty">No channels yet. Add a YouTube URL to get a podcast feed.</p>`;
         } else {
-          listEl.innerHTML = data.channels.map(card).join("");
+          listEl.innerHTML = data.channels.map((ch) => card(ch, data.running)).join("");
         }
         if (statusEl.dataset.kind === "error") {
           /* keep the last action error until the next submit */
@@ -381,7 +396,38 @@
         }
       });
 
+      async function startRefresh(url, label) {
+        setStatus("");
+        try {
+          const res = await fetch(url, { method: "POST" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setStatus(errorDetail(data, "Could not start a refresh."), "error");
+            return;
+          }
+          if (data.status === "already-running") {
+            setStatus("A download is already running.");
+          } else {
+            setStatus(`Refreshing ${label}…`);
+          }
+          await load();
+        } catch {
+          setStatus("Network error. Try again.", "error");
+        }
+      }
+
+      refreshAllBtn.addEventListener("click", () => {
+        refreshAllBtn.disabled = true;
+        startRefresh("/refresh", "all channels");
+      });
+
       listEl.addEventListener("click", async (event) => {
+        const refresh = event.target.closest("[data-refresh]");
+        if (refresh) {
+          refresh.disabled = true;
+          startRefresh(`/${encodeURIComponent(refresh.dataset.refresh)}/refresh`, refresh.dataset.refresh);
+          return;
+        }
         const copy = event.target.closest("[data-copy]");
         if (copy) {
           try {
