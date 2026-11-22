@@ -9,5 +9,5 @@ services:
       CHANNELS_FILE: /app/channels.json
     volumes:
       - ./data:/data
-      - ./channels.json:/app/channels.json:ro
+      - ./channels.json:/app/channels.json
     restart: unless-stopped

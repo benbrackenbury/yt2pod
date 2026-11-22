@@ -10,15 +10,18 @@ from pathlib import Path
 
 import uvicorn
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from pydantic import BaseModel, Field
 
 from yt2pod import (
     Channel,
+    add_channel,
     build_rss,
     load_settings,
     load_state,
     mime_for_path,
     refresh_status,
+    remove_channel,
     run_refresh,
 )
 
@@ -29,6 +32,12 @@ logging.basicConfig(
 log = logging.getLogger("yt2pod")
 
 settings = load_settings()
+UI_PATH = Path(__file__).parent / "static" / "index.html"
+
+
+class ChannelIn(BaseModel):
+    youtube: str = Field(min_length=1)
+    slug: str = ""
 
 
 def _channel(slug: str) -> Channel:
@@ -130,6 +139,22 @@ def _artwork(slug: str) -> FileResponse:
     return FileResponse(path, media_type="image/jpeg")
 
 
+def _channel_item(request: Request, slug: str, channel: Channel) -> dict:
+    origin = _origin(request)
+    state = load_state(settings.state_path(slug))
+    return {
+        "slug": slug,
+        "youtube": channel.youtube,
+        "title": state.get("title") or channel.title or slug,
+        "feed_url": settings.feed_url(slug, origin),
+        "artwork_url": (
+            settings.artwork_url(slug, origin) if settings.artwork_path(slug).is_file() else None
+        ),
+        "episodes": len(state.get("episodes") or []),
+        "last_refresh": state.get("last_refresh"),
+    }
+
+
 def _status_payload(request: Request, slug: str) -> dict:
     _channel(slug)
     state = load_state(settings.state_path(slug))
@@ -151,9 +176,53 @@ def health() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@app.get("/")
-def index(request: Request) -> dict:
-    return {"feeds": _feeds(_origin(request))}
+@app.get("/", response_class=HTMLResponse)
+def index() -> str:
+    return UI_PATH.read_text(encoding="utf-8")
+
+
+@app.get("/api/channels")
+def list_channels(request: Request) -> dict:
+    live = refresh_status()
+    return {
+        "channels": [
+            _channel_item(request, slug, channel)
+            for slug, channel in settings.channels.items()
+        ],
+        **live,
+    }
+
+
+@app.post("/api/channels")
+def create_channel(
+    payload: ChannelIn,
+    request: Request,
+    background_tasks: BackgroundTasks,
+) -> dict:
+    try:
+        channel = add_channel(settings, payload.youtube, payload.slug)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not refresh_status()["running"]:
+        background_tasks.add_task(run_refresh, settings, channel.slug)
+    return {
+        "ok": True,
+        "slug": channel.slug,
+        "feed_url": settings.feed_url(channel.slug, _origin(request)),
+    }
+
+
+@app.delete("/api/channels/{slug}")
+def delete_channel(slug: str) -> dict:
+    if slug not in settings.channels:
+        raise HTTPException(status_code=404, detail="Not found")
+    if refresh_status()["running"]:
+        raise HTTPException(
+            status_code=409,
+            detail="Wait for the current download to finish, then remove this channel.",
+        )
+    remove_channel(settings, slug)
+    return {"ok": True}
 
 
 @app.api_route("/refresh", methods=["GET", "POST"])

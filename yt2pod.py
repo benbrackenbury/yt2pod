@@ -23,7 +23,18 @@ ITUNES_NS = "http://www.itunes.com/dtds/podcast-1.0.dtd"
 ATOM_NS = "http://www.w3.org/2005/Atom"
 VIDEO_ID_RE = re.compile(r"^[\w-]{6,20}$")
 SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
-RESERVED_SLUGS = {"health", "media", "artwork", "refresh", "status", "feed", "docs", "redoc"}
+RESERVED_SLUGS = {
+    "health",
+    "media",
+    "artwork",
+    "refresh",
+    "status",
+    "feed",
+    "docs",
+    "redoc",
+    "api",
+    "static",
+}
 CHANNEL_HOME_RE = re.compile(
     r"^https?://(?:www\.)?youtube\.com/(@[^/]+|channel/[\w-]+|c/[\w-]+|user/[\w-]+)/?$",
     re.I,
@@ -41,6 +52,7 @@ MIME = {
 }
 
 _refresh_lock = threading.Lock()
+_channels_lock = threading.Lock()
 _refresh_running = False
 _refresh_error: str | None = None
 _refresh_current: str | None = None
@@ -141,9 +153,9 @@ def parse_channels(raw: dict[str, Any]) -> dict[str, Channel]:
     for slug, spec in raw.items():
         slug = str(slug).strip().lower()
         if slug in RESERVED_SLUGS:
-            raise SystemExit(f"Channel slug '{slug}' is reserved")
+            raise ValueError(f"Channel slug '{slug}' is reserved")
         if not SLUG_RE.fullmatch(slug):
-            raise SystemExit(f"Channel slug '{slug}' must be lowercase letters, numbers, and dashes")
+            raise ValueError(f"Channel slug '{slug}' must be lowercase letters, numbers, and dashes")
         extra = {"title": "", "description": "", "author": "", "artwork": ""}
         if isinstance(spec, str):
             youtube = spec
@@ -156,13 +168,69 @@ def parse_channels(raw: dict[str, Any]) -> dict[str, Channel]:
                 "artwork": str(spec.get("artwork") or ""),
             }
         else:
-            raise SystemExit(f"Channel '{slug}' must be a YouTube URL or an object")
+            raise ValueError(f"Channel '{slug}' must be a YouTube URL or an object")
         if not youtube.strip():
-            raise SystemExit(f"Channel '{slug}' is missing a YouTube URL")
+            raise ValueError(f"Channel '{slug}' is missing a YouTube URL")
         channels[slug] = Channel(slug=slug, youtube=youtube.strip(), **extra)
-    if not channels:
-        raise SystemExit("channels.json has no channels")
     return channels
+
+
+def channels_payload(channels: dict[str, Channel]) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    for slug, channel in channels.items():
+        extra = {
+            key: value
+            for key, value in {
+                "title": channel.title,
+                "description": channel.description,
+                "author": channel.author,
+                "artwork": channel.artwork,
+            }.items()
+            if value
+        }
+        payload[slug] = {"youtube": channel.youtube, **extra} if extra else channel.youtube
+    return payload
+
+
+def save_channels(settings: Settings) -> None:
+    path = settings.channels_file
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(
+        json.dumps(channels_payload(settings.channels), indent=2, ensure_ascii=False) + "\n",
+        encoding="utf-8",
+    )
+    tmp.replace(path)
+
+
+def add_channel(settings: Settings, youtube: str, slug: str = "") -> Channel:
+    youtube = youtube.strip()
+    if not youtube:
+        raise ValueError("Paste a YouTube channel URL or @handle")
+    slug = (slug or slug_from_youtube(youtube)).strip().lower()
+    if slug in RESERVED_SLUGS:
+        raise ValueError(f"Slug “{slug}” is reserved")
+    if not SLUG_RE.fullmatch(slug):
+        raise ValueError("Slug must be lowercase letters, numbers, and dashes")
+    with _channels_lock:
+        if slug in settings.channels:
+            raise ValueError(f"“{slug}” is already added")
+        channel = Channel(slug=slug, youtube=youtube)
+        settings.channels[slug] = channel
+        settings.media_dir(slug).mkdir(parents=True, exist_ok=True)
+        save_channels(settings)
+    return channel
+
+
+def remove_channel(settings: Settings, slug: str) -> None:
+    with _channels_lock:
+        if slug not in settings.channels:
+            raise KeyError(slug)
+        del settings.channels[slug]
+        save_channels(settings)
+    dest = settings.channel_dir(slug)
+    if dest.is_dir():
+        shutil.rmtree(dest, ignore_errors=True)
 
 
 def load_channels(path: Path, fallback_youtube: str = "") -> dict[str, Channel]:
@@ -170,11 +238,14 @@ def load_channels(path: Path, fallback_youtube: str = "") -> dict[str, Channel]:
         raw = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(raw, dict):
             raise SystemExit("channels.json must be an object of slug -> channel")
-        return parse_channels(raw)
+        try:
+            return parse_channels(raw)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
     if fallback_youtube:
         slug = slug_from_youtube(fallback_youtube)
         return {slug: Channel(slug=slug, youtube=fallback_youtube)}
-    raise SystemExit("Add channels.json or set YOUTUBE_CHANNEL")
+    return {}
 
 
 def _migrate_legacy_data(settings: Settings) -> None:

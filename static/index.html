@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#f6f4ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#111111" />
+    <title>yt2pod</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        --bg: #f6f4ef;
+        --fg: #1c1a16;
+        --muted: #5c574e;
+        --line: #ddd8ce;
+        --line-strong: #b8b2a6;
+        --card: #ffffff;
+        --accent: #c9a227;
+        --accent-fg: #16140e;
+        --danger: #a33d3d;
+        --danger-line: #e8b4b4;
+        --focus: #0b63ce;
+        --placeholder: #8a847a;
+        --ph: #ece8e0;
+        --ph-fg: #8a847a;
+      }
+      @media (prefers-color-scheme: dark) {
+        :root {
+          --bg: #111111;
+          --fg: #f4f1ea;
+          --muted: #b4aea3;
+          --line: #2a2a2a;
+          --line-strong: #555555;
+          --card: #1a1a1a;
+          --accent: #e8c547;
+          --accent-fg: #16140e;
+          --danger: #f0a0a0;
+          --danger-line: #5a3030;
+          --focus: #8ec8ff;
+          --placeholder: #7a756c;
+          --ph: #262626;
+          --ph-fg: #6d6d6d;
+        }
+      }
+      * { box-sizing: border-box; }
+      html, body { margin: 0; background: var(--bg); color: var(--fg); }
+      body {
+        font: 16px/1.45 ui-sans-serif, system-ui, -apple-system, sans-serif;
+        padding: max(1.25rem, env(safe-area-inset-top)) max(1.25rem, env(safe-area-inset-right))
+          max(2rem, env(safe-area-inset-bottom)) max(1.25rem, env(safe-area-inset-left));
+        touch-action: manipulation;
+      }
+      a { color: var(--accent); }
+      a:hover { text-decoration-thickness: 2px; }
+      :focus-visible {
+        outline: 2px solid var(--focus);
+        outline-offset: 3px;
+      }
+      .skip {
+        position: absolute;
+        left: -999px;
+      }
+      .skip:focus {
+        left: 1rem;
+        top: 1rem;
+        background: var(--card);
+        padding: 0.4rem 0.7rem;
+        z-index: 2;
+      }
+      main { max-width: 40rem; margin: 0 auto; }
+      h1 {
+        font-size: 1.6rem;
+        font-weight: 650;
+        letter-spacing: -0.03em;
+        text-wrap: balance;
+        margin: 0 0 0.35rem;
+      }
+      .lede {
+        color: var(--muted);
+        margin: 0 0 1.5rem;
+      }
+      form.add {
+        display: grid;
+        gap: 0.65rem;
+        margin-bottom: 1.5rem;
+      }
+      label span {
+        display: block;
+        font-size: 0.85rem;
+        color: var(--muted);
+        margin-bottom: 0.3rem;
+      }
+      input {
+        width: 100%;
+        background: var(--card);
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 0.7rem 0.8rem;
+        font: inherit;
+      }
+      input::placeholder { color: var(--placeholder); }
+      .row {
+        display: flex;
+        gap: 0.65rem;
+        flex-wrap: wrap;
+        align-items: end;
+      }
+      .row .slug { flex: 1 1 8rem; }
+      .row button { flex: 0 0 auto; }
+      button {
+        font: inherit;
+        font-weight: 600;
+        border: 0;
+        border-radius: 10px;
+        padding: 0.7rem 1rem;
+        cursor: pointer;
+        background: var(--accent);
+        color: var(--accent-fg);
+      }
+      button:hover { filter: brightness(1.06); }
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+      button.ghost {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid var(--line);
+      }
+      button.danger {
+        background: transparent;
+        color: var(--danger);
+        border: 1px solid var(--danger-line);
+      }
+      .status {
+        min-height: 1.3rem;
+        color: var(--muted);
+        margin: 0 0 1rem;
+      }
+      .status[data-kind="error"] { color: var(--danger); }
+      .list { display: grid; gap: 0.75rem; }
+      article {
+        display: grid;
+        grid-template-columns: 3.5rem 1fr;
+        gap: 0.85rem;
+        background: var(--card);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 0.9rem;
+        min-width: 0;
+      }
+      article img,
+      .ph {
+        width: 3.5rem;
+        height: 3.5rem;
+        border-radius: 8px;
+        object-fit: cover;
+        background: var(--ph);
+      }
+      .ph { display: grid; place-items: center; color: var(--ph-fg); font-size: 0.75rem; }
+      article h2 {
+        font-size: 1.05rem;
+        margin: 0;
+        text-wrap: pretty;
+        overflow-wrap: anywhere;
+      }
+      article .meta {
+        color: var(--muted);
+        font-size: 0.88rem;
+        font-variant-numeric: tabular-nums;
+        margin: 0.15rem 0 0.55rem;
+        overflow-wrap: anywhere;
+      }
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.4rem;
+      }
+      .actions button,
+      .actions a.btn {
+        padding: 0.45rem 0.7rem;
+        font-size: 0.9rem;
+        text-decoration: none;
+        display: inline-block;
+      }
+      a.btn {
+        background: transparent;
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        font-weight: 600;
+      }
+      a.btn:hover { border-color: var(--line-strong); }
+      .empty {
+        color: var(--muted);
+        border: 1px dashed var(--line);
+        border-radius: 14px;
+        padding: 1.2rem;
+      }
+      dialog {
+        background: var(--card);
+        color: var(--fg);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 1.1rem;
+        max-width: 22rem;
+        overscroll-behavior: contain;
+      }
+      dialog::backdrop { background: rgb(0 0 0 / 0.55); }
+      dialog p { margin: 0 0 1rem; overflow-wrap: anywhere; }
+      dialog .actions { justify-content: end; }
+      @media (prefers-reduced-motion: reduce) {
+        * { transition: none !important; }
+      }
+    </style>
+  </head>
+  <body>
+    <a class="skip" href="#main">Skip to content</a>
+    <main id="main">
+      <h1>Channels</h1>
+      <p class="lede">
+        Add a YouTube channel, wait for episodes, then follow the feed URL in Apple Podcasts
+        (Library → More → Follow a Show by URL).
+      </p>
+      <form class="add" id="add-form">
+        <label>
+          <span>YouTube channel</span>
+          <input
+            name="youtube"
+            type="text"
+            inputmode="url"
+            autocomplete="off"
+            spellcheck="false"
+            required
+            placeholder="@theo or https://www.youtube.com/@theo"
+          />
+        </label>
+        <div class="row">
+          <label class="slug">
+            <span>Slug (optional)</span>
+            <input
+              name="slug"
+              type="text"
+              autocomplete="off"
+              spellcheck="false"
+              placeholder="theo"
+            />
+          </label>
+          <button type="submit" id="add-btn">Add Channel</button>
+        </div>
+      </form>
+      <p class="status" id="status" aria-live="polite"></p>
+      <section class="list" id="list" aria-label="Channel list"></section>
+    </main>
+    <dialog id="confirm" aria-labelledby="confirm-title">
+      <p id="confirm-title">Remove this channel? Downloaded episodes are deleted.</p>
+      <div class="actions">
+        <button type="button" class="ghost" id="confirm-cancel">Cancel</button>
+        <button type="button" class="danger" id="confirm-ok">Remove Channel</button>
+      </div>
+    </dialog>
+    <script>
+      const listEl = document.getElementById("list");
+      const statusEl = document.getElementById("status");
+      const form = document.getElementById("add-form");
+      const addBtn = document.getElementById("add-btn");
+      const dialog = document.getElementById("confirm");
+      const dialogTitle = document.getElementById("confirm-title");
+      let pendingSlug = null;
+      let timer = null;
+
+      function setStatus(text, kind) {
+        statusEl.textContent = text || "";
+        statusEl.dataset.kind = kind || "";
+      }
+
+      function errorDetail(data, fallback) {
+        const detail = data && data.detail;
+        return typeof detail === "string" ? detail : fallback;
+      }
+
+      function fmtTime(iso) {
+        if (!iso) return "not downloaded yet";
+        try {
+          return new Intl.DateTimeFormat(undefined, {
+            dateStyle: "medium",
+            timeStyle: "short",
+          }).format(new Date(iso));
+        } catch {
+          return iso;
+        }
+      }
+
+      function card(ch) {
+        const art = ch.artwork_url
+          ? `<img src="${ch.artwork_url}" alt="" width="56" height="56" />`
+          : `<div class="ph" aria-hidden="true">yt</div>`;
+        const count = new Intl.NumberFormat().format(ch.episodes);
+        return `<article>
+          ${art}
+          <div>
+            <h2 translate="no">${escapeHtml(ch.title)}</h2>
+            <p class="meta">
+              <span translate="no">${escapeHtml(ch.slug)}</span>
+              · ${count} episode${ch.episodes === 1 ? "" : "s"}
+              · ${escapeHtml(fmtTime(ch.last_refresh))}
+            </p>
+            <div class="actions">
+              <a class="btn" href="${ch.feed_url}">Open Feed</a>
+              <button type="button" class="ghost" data-copy="${ch.feed_url}">Copy Feed</button>
+              <button type="button" class="danger" data-remove="${ch.slug}" data-title="${escapeAttr(ch.title)}">Remove</button>
+            </div>
+          </div>
+        </article>`;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;");
+      }
+      function escapeAttr(value) {
+        return escapeHtml(value).replaceAll("'", "&#39;");
+      }
+
+      async function load() {
+        const res = await fetch("/api/channels");
+        if (!res.ok) throw new Error("Could not load channels");
+        const data = await res.json();
+        if (!data.channels.length) {
+          listEl.innerHTML = `<p class="empty">No channels yet. Add a YouTube URL to get a podcast feed.</p>`;
+        } else {
+          listEl.innerHTML = data.channels.map(card).join("");
+        }
+        if (statusEl.dataset.kind === "error") {
+          /* keep the last action error until the next submit */
+        } else if (data.running) {
+          setStatus(`Downloading ${data.current || "episodes"}…`);
+        } else if (data.error) {
+          setStatus(data.error, "error");
+        }
+        const wait = data.running ? 2500 : 20000;
+        clearTimeout(timer);
+        timer = setTimeout(() => load().catch(() => {}), wait);
+      }
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const body = {
+          youtube: form.youtube.value.trim(),
+          slug: form.slug.value.trim(),
+        };
+        addBtn.disabled = true;
+        addBtn.textContent = "Adding…";
+        setStatus("");
+        try {
+          const res = await fetch("/api/channels", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setStatus(errorDetail(data, "Could not add that channel."), "error");
+            form.youtube.focus();
+            return;
+          }
+          form.reset();
+          form.youtube.focus();
+          setStatus(`Added ${data.slug}. Download starts in the background.`);
+          await load();
+        } catch {
+          setStatus("Network error. Try again.", "error");
+        } finally {
+          addBtn.disabled = false;
+          addBtn.textContent = "Add Channel";
+        }
+      });
+
+      listEl.addEventListener("click", async (event) => {
+        const copy = event.target.closest("[data-copy]");
+        if (copy) {
+          try {
+            await navigator.clipboard.writeText(copy.dataset.copy);
+            setStatus("Feed URL copied.");
+          } catch {
+            setStatus("Copy failed. Use Open Feed and copy from the address bar.", "error");
+          }
+          return;
+        }
+        const remove = event.target.closest("[data-remove]");
+        if (remove) {
+          pendingSlug = remove.dataset.remove;
+          dialogTitle.textContent = `Remove “${remove.dataset.title}”? Downloaded episodes are deleted.`;
+          dialog.showModal();
+        }
+      });
+
+      document.getElementById("confirm-cancel").addEventListener("click", () => dialog.close());
+      document.getElementById("confirm-ok").addEventListener("click", async () => {
+        const slug = pendingSlug;
+        dialog.close();
+        if (!slug) return;
+        try {
+          const res = await fetch(`/api/channels/${encodeURIComponent(slug)}`, { method: "DELETE" });
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            setStatus(errorDetail(data, "Could not remove that channel."), "error");
+            return;
+          }
+          setStatus(`Removed ${slug}.`);
+          await load();
+        } catch {
+          setStatus("Network error. Try again.", "error");
+        }
+      });
+
+      load().catch(() => setStatus("Could not load channels.", "error"));
+    </script>
+  </body>
+</html>

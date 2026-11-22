@@ -2,15 +2,19 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
+import json
+
 from yt2pod import (
     Channel,
     Settings,
+    add_channel,
     apple_artwork_url,
     build_rss,
     is_short,
     mime_for_path,
     normalize_channel,
     parse_channels,
+    remove_channel,
 )
 
 
@@ -66,6 +70,25 @@ class ChannelConfigTests(unittest.TestCase):
         )
         self.assertEqual(channels["veritasium"].youtube, "https://www.youtube.com/@veritasium")
         self.assertEqual(channels["mkbhd"].title, "MKBHD")
+
+    def test_empty_file_is_ok(self):
+        self.assertEqual(parse_channels({}), {})
+
+    def test_add_and_remove_persists(self):
+        with TemporaryDirectory() as tmp:
+            settings = _settings(tmp, channels={}, channels_file=Path(tmp) / "channels.json")
+            channel = add_channel(settings, "@theo")
+            self.assertEqual(channel.slug, "theo")
+            self.assertEqual(json.loads(settings.channels_file.read_text())["theo"], "@theo")
+            remove_channel(settings, "theo")
+            self.assertEqual(json.loads(settings.channels_file.read_text()), {})
+            self.assertNotIn("theo", settings.channels)
+
+    def test_rejects_reserved_slug(self):
+        with TemporaryDirectory() as tmp:
+            settings = _settings(tmp, channels={}, channels_file=Path(tmp) / "channels.json")
+            with self.assertRaises(ValueError):
+                add_channel(settings, "https://www.youtube.com/@health", "api")
 
 
 class RssTests(unittest.TestCase):
