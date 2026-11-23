@@ -86,7 +86,7 @@ class Settings:
     max_height: int = 720
     exclude_shorts: bool = True
     min_duration: int = 61
-    refresh_hours: float = 6
+    refresh_hours: float = 1
     refresh_on_start: bool = True
     cookies_file: str = ""
     host: str = "0.0.0.0"
@@ -286,7 +286,7 @@ def load_settings() -> Settings:
         max_height=max(144, _env_int("MAX_HEIGHT", 720)),
         exclude_shorts=_env_bool("EXCLUDE_SHORTS", True),
         min_duration=max(1, _env_int("MIN_DURATION", 61)),
-        refresh_hours=_env_float("REFRESH_HOURS", 6),
+        refresh_hours=_env_float("REFRESH_HOURS", 1),
         refresh_on_start=_env_bool("REFRESH_ON_START", True),
         cookies_file=_env("COOKIES_FILE"),
         host=_env("HOST", "0.0.0.0") or "0.0.0.0",

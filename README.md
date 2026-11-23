@@ -82,7 +82,7 @@ That is `/veritasium/feed.xml` and `/mkbhd/feed.xml`. `BASE_URL` is the fallback
 | `MAX_HEIGHT` | `720` | Cap download resolution |
 | `EXCLUDE_SHORTS` | `true` | Use the `/videos` tab and skip clips under `MIN_DURATION` |
 | `MIN_DURATION` | `61` | Seconds. Used when excluding Shorts |
-| `REFRESH_HOURS` | `6` | Background poll. `0` means only manual / on-request |
+| `REFRESH_HOURS` | `1` | Background poll. `0` means only manual / on-request |
 | `REFRESH_ON_START` | `true` | Download when the process boots |
 | `COOKIES_FILE` | empty | Netscape cookies file if YouTube starts asking for a login |
 | `HOST` / `PORT` | `0.0.0.0` / `8000` | Bind address |
